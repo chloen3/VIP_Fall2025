@@ -1,0 +1,113 @@
+{
+  "users": [
+    {
+      "user_id": "milspouse-001",
+      "name": "Avery Carter",
+      "headline": "Registered Nurse | Compact-State RN | Telehealth-friendly",
+      "years_experience": 5,
+      "education": [
+        "B.S. Nursing"
+      ],
+      "desired_roles": [
+        "Registered Nurse",
+        "Telehealth Nurse",
+        "Care Coordinator"
+      ],
+      "skills": [
+        "Nursing",
+        "RN",
+        "Telehealth",
+        "Care Coordination",
+        "EMR",
+        "Epic",
+        "Patient Education"
+      ],
+      "location_keywords": [
+        "Fort Liberty",
+        "Fayetteville",
+        "North Carolina",
+        "NC",
+        "Remote",
+        "Telehealth"
+      ],
+      "remote_ok": true,
+      "licensed_fields": [
+        "Nursing"
+      ],
+      "state_licenses": [
+        "NLC Compact"
+      ],
+      "notes": "PCS in 6\u20139 months; prefers employers familiar with license portability / NLC."
+    },
+    {
+      "user_id": "milspouse-002",
+      "name": "Jordan Lee",
+      "headline": "Project Manager | Remote-first | Military spouse network lead",
+      "years_experience": 4,
+      "education": [
+        "B.S. Business Administration",
+        "PMP (in progress)"
+      ],
+      "desired_roles": [
+        "Project Manager",
+        "Program Coordinator",
+        "Operations Manager"
+      ],
+      "skills": [
+        "Project Management",
+        "Scheduling",
+        "Stakeholder Communication",
+        "Excel",
+        "Jira",
+        "Confluence"
+      ],
+      "location_keywords": [
+        "San Diego",
+        "Camp Pendleton",
+        "California",
+        "CA",
+        "Remote",
+        "Hybrid"
+      ],
+      "remote_ok": true,
+      "notes": "Open to DoD contractors and military-friendly employers; flexible hours helpful."
+    },
+    {
+      "user_id": "milspouse-003",
+      "name": "Taylor Morgan",
+      "headline": "Elementary Teacher | License Portability | Substitute/remote tutoring",
+      "years_experience": 6,
+      "education": [
+        "B.Ed. Elementary Education"
+      ],
+      "desired_roles": [
+        "Elementary Teacher",
+        "Substitute Teacher",
+        "Tutor"
+      ],
+      "skills": [
+        "Teaching",
+        "Curriculum Design",
+        "Classroom Management",
+        "Reading Intervention",
+        "Google Classroom"
+      ],
+      "location_keywords": [
+        "Norfolk",
+        "Virginia Beach",
+        "Hampton Roads",
+        "Virginia",
+        "VA",
+        "Remote"
+      ],
+      "remote_ok": true,
+      "licensed_fields": [
+        "Teaching"
+      ],
+      "state_licenses": [
+        "VA Teaching License"
+      ],
+      "notes": "Interested in districts honoring license reciprocity; okay with part-time during PCS."
+    }
+  ]
+}
