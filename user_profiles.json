@@ -30,6 +30,7 @@
         "Remote",
         "Telehealth"
       ],
+      "states": ["nc"],
       "remote_ok": true,
       "licensed_fields": [
         "Nursing"
@@ -37,6 +38,11 @@
       "state_licenses": [
         "NLC Compact"
       ],
+      "desired_salary": { "min": 80000, "max": 110000, "currency": "USD" },
+      "work_type_pref": ["full time", "remote", "hybrid", "temporary"],
+      "company_size_pref": ["201-1000", "1000+"],
+      "company_tags_pref": ["military-friendly", "license-portability", "telehealth", "portal-indeed", "portal-jobs2careers"],
+      "geo_pref": { "lat": 35.0527, "lon": -78.8784, "radius_km": 80 },
       "notes": "PCS in 6\u20139 months; prefers employers familiar with license portability / NLC."
     },
     {
@@ -69,7 +75,13 @@
         "Remote",
         "Hybrid"
       ],
+      "states": ["va"],
       "remote_ok": true,
+      "desired_salary": { "min": 90000, "max": 125000, "currency": "USD" },
+      "work_type_pref": ["full time", "remote", "hybrid", "contract"],
+      "company_size_pref": ["51-200", "201-1000", "1000+"],
+      "company_tags_pref": ["military-friendly", "dod-contractor", "pm-tools", "portal-linkedin", "portal-jobs2careers"],
+      "geo_pref": { "lat": 32.7157, "lon": -117.1611, "radius_km": 60 },
       "notes": "Open to DoD contractors and military-friendly employers; flexible hours helpful."
     },
     {
@@ -100,6 +112,7 @@
         "VA",
         "Remote"
       ],
+      "states": ["ca"],
       "remote_ok": true,
       "licensed_fields": [
         "Teaching"
@@ -107,6 +120,11 @@
       "state_licenses": [
         "VA Teaching License"
       ],
+      "desired_salary": { "min": 55000, "max": 75000, "currency": "USD" },
+      "work_type_pref": ["full time", "part time", "remote", "temporary"],
+      "company_size_pref": ["1000+"],
+      "company_tags_pref": ["license-reciprocity", "public-school", "military-friendly", "portal-indeed"],
+      "geo_pref": { "lat": 36.8508, "lon": -76.2859, "radius_km": 50 },
       "notes": "Interested in districts honoring license reciprocity; okay with part-time during PCS."
     }
   ]

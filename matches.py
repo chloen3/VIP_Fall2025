@@ -1,6 +1,18 @@
-import os, json, re, time
+import json, re
 import pandas as pd
 from dotenv import load_dotenv
+
+WEIGHTS = dict(
+    skill=1.0,
+    role=1.0,
+    location=1.0,
+    exp=1.0,
+    salary=1.0,
+    wtype=0.6,
+    csize=0.5,
+    tags=0.4,
+    geo=1.2,
+)
 
 # ---------------- Configuration ----------------
 TOP_K = 5
@@ -155,16 +167,11 @@ def main(jobs_csv: str, users_json: str):
 
     # 1) read CSV
     df = pd.read_csv(jobs_csv, dtype=str, keep_default_na=False, engine="c")
+    df = normalize_kaggle_columns(df)
+    if "country" in df.columns:
+        df = df[df["country"].str.lower().str.contains(r"\b(?:united states|usa|u\.s\.a?\.?)\b", regex=True, na=False)]
+        print(f"[INFO] Filtered to United States only → {len(df)} rows remaining.")
 
-    # 2) drop unneeded columns
-    want_lower = {
-        "job id", "job title", "role", "location", "country",
-        "work type", "job description", "skills"
-    }
-    keep_cols = [c for c in df.columns if c.strip().lower() in want_lower]
-    df = df[keep_cols]
-
-    # 3) lowercase col headers
     df.columns = [c.strip().lower() for c in df.columns]
 
     def col(name):
@@ -187,12 +194,39 @@ def main(jobs_csv: str, users_json: str):
     wtype_l   = wtype.str.lower().fillna("")
     jskills_l = jskills.str.lower().fillna("")
 
+    # optional columns if existent
+    min_exp  = col("min years exp").apply(to_int)
+    max_exp  = col("max years exp").apply(to_int)
+    sal_min  = col("salary min").apply(to_float)
+    sal_max  = col("salary max").apply(to_float)
+    sal_cur  = col("salary currency").str.upper()
+    csize    = col("company size").str.strip().str.lower()
+    lat_s    = col("latitude").apply(to_float)
+    lon_s    = col("longitude").apply(to_float)
+    tags_s   = col("tags").apply(parse_list)
+
     for u in users:
         name = u.get("name", u.get("user_id","(user)"))
         desired_roles = [s.strip().lower() for s in u.get("desired_roles", []) if s]
         skills = [s.strip().lower() for s in u.get("skills", []) if s]
         loc_keywords = [s.strip().lower() for s in u.get("location_keywords", []) if s]
         remote_ok = bool(u.get("remote_ok", True))
+
+        yexp = u.get("years_experience", None)
+
+        sal_pref = u.get("desired_salary", {}) or {}
+        sal_pref_min = sal_pref.get("min", None)
+        sal_pref_max = sal_pref.get("max", None)
+        sal_pref_cur = (sal_pref.get("currency") or "").upper()
+
+        wtypes_pref = [s.strip().lower() for s in u.get("work_type_pref", []) if s]
+        csize_pref  = [s.strip().lower() for s in u.get("company_size_pref", []) if s]
+        ctags_pref  = [s.strip().lower() for s in u.get("company_tags_pref", []) if s]
+
+        geo_pref = u.get("geo_pref") or {}
+        geo_lat  = geo_pref.get("lat")
+        geo_lon  = geo_pref.get("lon")
+        geo_rad  = geo_pref.get("radius_km")
 
         # role mask: any desired role in title OR role OR desc
         if desired_roles:
@@ -219,15 +253,30 @@ def main(jobs_csv: str, users_json: str):
 
         # remote allowed adds simple "remote" signal
         if remote_ok:
-            loc_mask |= (
-                loc_l.str.contains("remote", regex=False, na=False) |
-                country_l.str.contains("remote", regex=False, na=False) |
-                wtype_l.str.contains("remote", regex=False, na=False) |
-                desc_l.str.contains("remote", regex=False, na=False)
-            )
+            loc_mask |= (loc_l.str.contains("remote", regex=False, na=False) |
+                         country_l.str.contains("remote", regex=False, na=False) |
+                         wtype_l.str.contains("remote", regex=False, na=False) |
+                         desc_l.str.contains("remote", regex=False, na=False))
 
         # candidate rows are any with role OR location hit
-        cand_idx = df.index[role_mask | loc_mask]
+        hard_mask = exp_mask & sal_mask & wtype_mask2 & csize_mask
+        cand_mask = hard_mask & (role_mask | loc_mask)
+        cand_idx = df.index[cand_mask]
+
+        # backoff 1: role-only
+        if len(cand_idx) == 0:
+            cand_mask = hard_mask & role_mask
+            cand_idx = df.index[cand_mask]
+
+        # backoff 2: location-only
+        if len(cand_idx) == 0:
+            cand_mask = hard_mask & loc_mask
+            cand_idx = df.index[cand_mask]
+
+        # backoff 3: just hard filters
+        if len(cand_idx) == 0:
+            cand_idx = df.index[hard_mask]
+
         if len(cand_idx) == 0:
             print("="*80)
             print(f"Top 0 matches for: {name}")
@@ -267,12 +316,68 @@ def main(jobs_csv: str, users_json: str):
             # loc hit (same)
             loc_hit = 1 if loc_mask.loc[idx] else 0
 
-            score = skill_hits + role_hit + loc_hit
+            exp_hit = 1 if exp_mask.loc[idx] else 0
+            sal_hit = 1 if sal_mask.loc[idx] else 0
+            wt_hit  = 1 if wtype_mask2.loc[idx] else 0
+            cs_hit  = 1 if csize_mask.loc[idx] else 0
+            tag_hit = 1 if ctags_mask.loc[idx] else 0
+            geo_hit = 1 if geo_mask.loc[idx] else 0
+
+            score = (
+                WEIGHTS["skill"] * skill_hits +
+                WEIGHTS["role"]  * role_hit +
+                WEIGHTS["location"] * loc_hit +
+                WEIGHTS["exp"]   * exp_mask.loc[idx] +
+                WEIGHTS["salary"]* sal_mask.loc[idx] +
+                WEIGHTS["wtype"] * wtype_mask2.loc[idx] +
+                WEIGHTS["csize"] * csize_mask.loc[idx] +
+                WEIGHTS["tags"]  * ctags_mask.loc[idx] +
+                WEIGHTS["geo"]   * geo_mask.loc[idx]
+            )
+
             if skill_hits < MIN_SKILL_HITS:
                 continue
 
-            scores.append((score, idx, skill_hits, role_hit, loc_hit))
+            scores.append((
+                score, idx, skill_hits, role_hit, loc_hit,
+                exp_hit, sal_hit, wt_hit, cs_hit, tag_hit, geo_hit
+            ))
 
+        if not scores and MIN_SKILL_HITS > 0:
+            for idx in cand_idx:
+                jb_blob = blob_series.loc[idx]
+                text_l = jb_blob
+                # re-evaluate with no skill threshold
+                hits = 0
+                if skills:
+                    seen = set()
+                    for s in skills:
+                        if s and s not in seen and s in text_l:
+                            hits += 1
+                            seen.add(s)
+                skill_hits = hits
+                role_hit = 1 if role_mask.loc[idx] else 0
+                loc_hit  = 1 if loc_mask.loc[idx]  else 0
+                exp_hit  = 1 if exp_mask.loc[idx]  else 0
+                sal_hit  = 1 if sal_mask.loc[idx]  else 0
+                wt_hit   = 1 if wtype_mask2.loc[idx] else 0
+                cs_hit   = 1 if csize_mask.loc[idx] else 0
+                tag_hit  = 1 if ctags_mask.loc[idx] else 0
+                geo_hit  = 1 if geo_mask.loc[idx] else 0
+
+                score = (
+                    WEIGHTS["skill"] * skill_hits +
+                    WEIGHTS["role"]  * role_hit +
+                    WEIGHTS["location"] * loc_hit +
+                    WEIGHTS["exp"]   * exp_hit +
+                    WEIGHTS["salary"]* sal_hit +
+                    WEIGHTS["wtype"] * wt_hit +
+                    WEIGHTS["csize"] * cs_hit +
+                    WEIGHTS["tags"]  * tag_hit +
+                    WEIGHTS["geo"]   * geo_hit
+                )
+                scores.append((score, idx, skill_hits, role_hit, loc_hit, exp_hit, sal_hit, wt_hit, cs_hit, tag_hit, geo_hit))
+                
         scores.sort(key=lambda t: (t[0], t[2], t[3], t[4]), reverse=True)
         top = scores[:TOP_K]
 
@@ -280,8 +385,6 @@ def main(jobs_csv: str, users_json: str):
         print(f"Top {len(top)} matches for: {name}")
         print("="*80)
 
-        # Pre-collect text for advice calls (top N jobs only)
-        upskill_payloads = []
         for rank, (score, idx, s_hits, r_hit, l_hit) in enumerate(top, 1):
             jt = (title.loc[idx] if isinstance(title, pd.Series) else "") or ""
             rl = (role.loc[idx] if isinstance(role, pd.Series) else "") or ""
@@ -289,20 +392,17 @@ def main(jobs_csv: str, users_json: str):
             cn = (country.loc[idx] if isinstance(country, pd.Series) else "") or ""
             wt = (wtype.loc[idx] if isinstance(wtype, pd.Series) else "") or ""
             jid = df.loc[idx, "job id"] if "job id" in df.columns else "(n/a)"
+            # extras if present
+            exp_min = min_exp.loc[idx] if "min years exp" in df.columns else None
+            exp_max = max_exp.loc[idx] if "max years exp" in df.columns else None
+            smn = sal_min.loc[idx] if "salary min" in df.columns else None
+            smx = sal_max.loc[idx] if "salary max" in df.columns else None
+            scur= sal_cur.loc[idx] if "salary currency" in df.columns else ""
+
             print(f"{rank:>2}. {jt or '(no title)'}")
             print(f"    Job Id: {jid}")
             print(f"    Role: {rl} | Location: {lc}, {cn} | Work Type: {wt}")
             print(f"    Score: {score}  (skills:{s_hits}  role:{bool(r_hit)}  loc/remote:{bool(l_hit)})")
-
-            if rank <= UPS_TOP_JOBS_FOR_SUGGEST:
-                jdesc = " ".join([
-                    str(title.loc[idx] or ""),
-                    str(role.loc[idx] or ""),
-                    str(desc.loc[idx] or ""),
-                    str(jskills.loc[idx] or "")
-                ])
-                upskill_payloads.append((rank, jid, jt, jdesc, idx))
-
             print("-"*80)
 
         # ---------------- Upskilling advice (only for top N) ----------------
