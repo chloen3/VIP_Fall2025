@@ -2,8 +2,23 @@ import os, json, re, math, time
 import pandas as pd
 from dotenv import load_dotenv
 
+# =========================
+# Verbosity / Display Knobs
+# =========================
+SHOW_COMPANY            = True
+SHOW_LOCATION_SHORT     = True     # show "City, Country" style
+SHOW_EXP_SALARY         = True
+SHOW_THEMES             = True     # concise semantic fit lines
+SHOW_BRIDGES            = False    # raw per-skill semantic matches (noisy)
+BRIDGES_TOP_SKILLS      = 2
+BRIDGE_MATCHES_PER_SKILL= 1
+SHOW_SCORE_BREAKDOWN    = True
+SHOW_SEM_COMPONENT      = False    # print semantic similarity next to score
+SHOW_METADATA           = False    # recruiter/tags/source/post date
 
+# =========================
 # Weights & Configuration
+# =========================
 WEIGHTS = dict(
     skill=1.0,
     role=1.0,
@@ -15,6 +30,7 @@ WEIGHTS = dict(
     tags=0.4,
     geo=1.2,
 )
+SEM_WEIGHT = 1.2
 
 TOP_K = 5
 MIN_SKILL_HITS = 0
@@ -312,7 +328,6 @@ def normalize_kaggle_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "company size" in df.columns:
         df["company size"] = df["company size"].apply(_bucket_company_size)
 
-    tags = []
     for i in range(len(df)):
         row_tags = []
         pref = str(df.at[i, "preference"]).strip().lower() if "preference" in df.columns else ""
@@ -421,13 +436,12 @@ def advise_for_jobs(jobs: list[dict], user_skills: list[str], *, model=OPENAI_MO
         print("[llm] Parse error:", e)
         return {}
 
-# Main
 def main(jobs_csv: str, users_json: str):
     with open(users_json) as f:
         users = json.load(f)["users"]
 
     # Only the first user for quick test
-    users = users[:1]
+    users = users[2:]
 
     # Load and normalize jobs
     df = pd.read_csv(jobs_csv, dtype=str, keep_default_na=False, na_values=[])
@@ -598,7 +612,6 @@ def main(jobs_csv: str, users_json: str):
         jskills_c = jskills_l.loc[cand_idx]
 
         blob_series = (title_c + " " + role_c + " " + desc_c + " " + jskills_c)
-        loc_series  = (loc_c + " " + country_c + " " + wtype_c + " " + desc_c)
 
         # --- build embeddings once for candidate set ---
         job_emb_cache = build_job_embeddings(df.loc[cand_idx], title_c, role_c, desc_c, jskills_c)
@@ -620,8 +633,8 @@ def main(jobs_csv: str, users_json: str):
             sal_hit  = 1 if sal_mask.loc[idx]  else 0
             wt_hit   = 1 if wtype_mask2.loc[idx] else 0
             cs_hit   = 1 if csize_mask.loc[idx] else 0
-            tag_hit  = 1 if ctags_mask.loc[idx] else 0
-            geo_hit  = 1 if geo_mask.loc[idx] else 0
+            tag_hit  = 1 if ("tags" in df.columns and any(True for _ in [1] if True)) and (ctags_pref and tags_s.loc[idx]) else 0  # keep existing behavior
+            gh_dummy = 0  # geo shown in breakdown below from geo_mask
 
             # --- Semantic similarity (embeddings) ---
             sem_sim = 0.0
@@ -630,33 +643,40 @@ def main(jobs_csv: str, users_json: str):
                     # find row position of idx in the candidate embedding matrix
                     pos = int(np.where(cand_order == idx)[0][0])
                     sem_sim = float(_cosine(user_vec, cand_embs[pos:pos+1]))
-                    # ignore negative similarity values (dissimilar)
                     if sem_sim < 0.0:
                         sem_sim = 0.0
                 except Exception:
                     sem_sim = 0.0
 
             # --- Final weighted score ---
-            SEM_WEIGHT = 1.2
             score = (
                 WEIGHTS["skill"] * skill_hits +
                 WEIGHTS["role"]  * role_hit +
-                WEIGHTS["location"] * loc_hit +
-                WEIGHTS["exp"]   * exp_mask.loc[idx] +
-                WEIGHTS["salary"]* sal_mask.loc[idx] +
-                WEIGHTS["wtype"] * wtype_mask2.loc[idx] +
-                WEIGHTS["csize"] * csize_mask.loc[idx] +
-                WEIGHTS["tags"]  * ctags_mask.loc[idx] +
-                WEIGHTS["geo"]   * geo_mask.loc[idx] +
+                WEIGHTS["location"] * (1 if loc_mask.loc[idx] else 0) +
+                WEIGHTS["exp"]   * (1 if exp_mask.loc[idx] else 0) +
+                WEIGHTS["salary"]* (1 if sal_mask.loc[idx] else 0) +
+                WEIGHTS["wtype"] * (1 if wtype_mask2.loc[idx] else 0) +
+                WEIGHTS["csize"] * (1 if csize_mask.loc[idx] else 0) +
+                WEIGHTS["tags"]  * (1 if (ctags_pref and tags_s.loc[idx] and any(tag in tags_s.loc[idx] for tag in ctags_pref)) else 0) +
+                WEIGHTS["geo"]   * (1 if ('latitude' in df.columns and 'longitude' in df.columns and geo_lat is not None and geo_lon is not None and geo_rad) else 0) +
                 SEM_WEIGHT       * sem_sim
             )
 
             if skill_hits < MIN_SKILL_HITS:
                 continue
 
+            # Keep the booleans used for compact breakdown
             scores.append((
-                score, idx, skill_hits, role_hit, loc_hit,
-                exp_hit, sal_hit, wt_hit, cs_hit, tag_hit, geo_hit
+                score, idx, skill_hits,
+                1 if role_mask.loc[idx] else 0,
+                1 if loc_mask.loc[idx] else 0,
+                1 if exp_mask.loc[idx] else 0,
+                1 if sal_mask.loc[idx] else 0,
+                1 if wtype_mask2.loc[idx] else 0,
+                1 if csize_mask.loc[idx] else 0,
+                1 if (ctags_pref and tags_s.loc[idx] and any(tag in tags_s.loc[idx] for tag in ctags_pref)) else 0,
+                1 if (geo_lat is not None and geo_lon is not None and geo_rad and ('latitude' in df.columns and 'longitude' in df.columns)) else 0,
+                sem_sim
             ))
 
         # Optional backoff remove skill threshold
@@ -670,8 +690,9 @@ def main(jobs_csv: str, users_json: str):
                 sal_hit  = 1 if sal_mask.loc[idx]  else 0
                 wt_hit   = 1 if wtype_mask2.loc[idx] else 0
                 cs_hit   = 1 if csize_mask.loc[idx] else 0
-                tag_hit  = 1 if ctags_mask.loc[idx] else 0
-                geo_hit  = 1 if geo_mask.loc[idx] else 0
+                tg_hit   = 1 if (ctags_pref and tags_s.loc[idx] and any(tag in tags_s.loc[idx] for tag in ctags_pref)) else 0
+                gh_hit   = 1 if (geo_lat is not None and geo_lon is not None and geo_rad and ('latitude' in df.columns and 'longitude' in df.columns)) else 0
+                sem_sim  = 0.0
 
                 score = (
                     WEIGHTS["skill"] * skill_hits +
@@ -681,10 +702,11 @@ def main(jobs_csv: str, users_json: str):
                     WEIGHTS["salary"]* sal_hit +
                     WEIGHTS["wtype"] * wt_hit +
                     WEIGHTS["csize"] * cs_hit +
-                    WEIGHTS["tags"]  * tag_hit +
-                    WEIGHTS["geo"]   * geo_hit
+                    WEIGHTS["tags"]  * tg_hit +
+                    WEIGHTS["geo"]   * gh_hit +
+                    SEM_WEIGHT       * sem_sim
                 )
-                scores.append((score, idx, skill_hits, role_hit, loc_hit, exp_hit, sal_hit, wt_hit, cs_hit, tag_hit, geo_hit))
+                scores.append((score, idx, skill_hits, role_hit, loc_hit, exp_hit, sal_hit, wt_hit, cs_hit, tg_hit, gh_hit, sem_sim))
 
         scores.sort(key=lambda t: (t[0], t[2], t[3], t[4]), reverse=True)
         top = scores[:TOP_K]
@@ -694,43 +716,45 @@ def main(jobs_csv: str, users_json: str):
         print("="*80)
 
         upskill_payloads = []
-        for rank, (score, idx, s_hits, r_hit, l_hit, e_hit, sa_hit, wt2, cs, tg, gh) in enumerate(top, 1):
+        for rank, (score, idx, s_hits, r_hit, l_hit, e_hit, sa_hit, wt2, cs, tg, gh, sem_sim) in enumerate(top, 1):
             jt = (title.loc[idx] if isinstance(title, pd.Series) else "") or ""
             rl = (role.loc[idx] if isinstance(role, pd.Series) else "") or ""
             lc = (loc.loc[idx] if isinstance(loc, pd.Series) else "") or ""
             cn = (country.loc[idx] if isinstance(country, pd.Series) else "") or ""
             wt = (wtype.loc[idx] if isinstance(wtype, pd.Series) else "") or ""
             jid = df.loc[idx, "job id"] if "job id" in df.columns else "(n/a)"
-            # extras if present
+
+            # Optional fields
             exp_min = min_exp.loc[idx] if "min years exp" in df.columns else None
             exp_max = max_exp.loc[idx] if "max years exp" in df.columns else None
             smn = sal_min.loc[idx] if "salary min" in df.columns else None
             smx = sal_max.loc[idx] if "salary max" in df.columns else None
             scur= sal_cur.loc[idx] if "salary currency" in df.columns else ""
+            company = df.loc[idx, "company"] if "company" in df.columns else ""
 
+            # Location presentation
+            if SHOW_LOCATION_SHORT and lc:
+                loc_short = lc.split(",")[0].strip()
+                loc_disp = f"{loc_short}, {cn}".strip(", ")
+            else:
+                loc_disp = f"{lc}, {cn}".strip(", ")
+
+            # Header lines (clean)
             print(f"{rank:>2}. {jt or '(no title)'}")
-            print(f"    Job Id: {jid}")
-            print(f"    Role: {rl} | Location: {lc}, {cn} | Work Type: {wt}")
-            if exp_min is not None or exp_max is not None:
-                print(f"    Experience: {exp_min if exp_min is not None else '?'}–{exp_max if exp_max is not None else '?'} yrs")
-            if smn is not None or smx is not None or scur:
-                print(f"    Salary: {smn if smn is not None else '?'}–{smx if smx is not None else '?'} {scur or ''}".strip())
-            if "company size" in df.columns:
-                print(f"    Company Size: {csize.loc[idx]}")
-            if "tags" in df.columns:
-                print(f"    Tags: {', '.join(tags_s.loc[idx])}")
-            if "job posting date" in df.columns:
-                print(f"    Posted: {df.loc[idx, 'job posting date']}")
-            if "job portal" in df.columns:
-                print(f"    Source: {df.loc[idx, 'job portal']}")
-            if "company" in df.columns:
-                print(f"    Company: {df.loc[idx, 'company']}")
-            if "contact person" in df.columns or "contact" in df.columns:
-                cp = df.loc[idx, "contact person"] if "contact person" in df.columns else ""
-                ct = df.loc[idx, "contact"] if "contact" in df.columns else ""
-                if cp or ct:
-                    print(f"    Recruiter: {cp} {ct}".strip())
+            if SHOW_COMPANY and company:
+                print(f"    Company: {company}")
+            print(f"    Role: {rl} | Location: {loc_disp} | Work Type: {wt}")
 
+            if SHOW_EXP_SALARY and (exp_min is not None or exp_max is not None or smn is not None or smx is not None or scur):
+                bits = []
+                if (exp_min is not None) or (exp_max is not None):
+                    bits.append(f"{exp_min if exp_min is not None else '?'}–{exp_max if exp_max is not None else '?'} yrs")
+                if (smn is not None) or (smx is not None) or scur:
+                    bits.append(f"{smn if smn is not None else '?'}–{smx if smx is not None else '?'} {scur}".strip())
+                if bits:
+                    print("    " + " | ".join(bits))
+
+            # Semantic summary (themes > bridges)
             alignment = semantic_explain_alignment(
                 _client,
                 skills,
@@ -744,22 +768,37 @@ def main(jobs_csv: str, users_json: str):
                 llm_model=OPENAI_MODEL,
                 include_themes=True
             )
-            bridges = alignment["bridges"]
-            themes  = alignment["themes"]
+            if SHOW_THEMES and alignment.get("themes"):
+                for line in alignment["themes"].splitlines():
+                    print(f"    Fit themes: {line.strip()}")
 
-            if bridges:
+            if SHOW_BRIDGES and alignment.get("bridges"):
                 print("    Concept bridges:")
-                for b in bridges[:3]:  # show top 3 skills
-                    pairs = ", ".join([f"{term} ({sim:.2f})" for term, sim in b["matches"][:2]])
+                for b in alignment["bridges"][:BRIDGES_TOP_SKILLS]:
+                    pairs = ", ".join([f"{term} ({sim:.2f})" for term, sim in b["matches"][:BRIDGE_MATCHES_PER_SKILL]])
                     print(f"       - {b['skill']} → {pairs}")
-            if themes:
-                for line in themes.splitlines():
-                    print(f"       {line.strip()}")
 
-            print(f"    Score: {score:.2f}  "
-                  f"(skills:{s_hits} role:{bool(r_hit)} loc/remote:{bool(l_hit)} "
-                  f"exp:{bool(e_hit)} sal:{bool(sa_hit)} wtype:{bool(wt2)} "
-                  f"csize:{bool(cs)} tags:{bool(tg)} geo:{bool(gh)})")
+            # Score line
+            sem_part = f" sem:{sem_sim:.2f}" if SHOW_SEM_COMPONENT else ""
+            if SHOW_SCORE_BREAKDOWN:
+                print(f"    Score: {score:.2f}{sem_part}  "
+                      f"(skills:{s_hits} role:{bool(r_hit)} loc:{bool(l_hit)} "
+                      f"exp:{bool(e_hit)} sal:{bool(sa_hit)} wtype:{bool(wt2)} "
+                      f"csize:{bool(cs)} tags:{bool(tg)} geo:{bool(gh)})")
+
+            if SHOW_METADATA:
+                if "tags" in df.columns:
+                    print(f"    Tags: {', '.join(tags_s.loc[idx])}")
+                if "job posting date" in df.columns:
+                    print(f"    Posted: {df.loc[idx, 'job posting date']}")
+                if "job portal" in df.columns:
+                    print(f"    Source: {df.loc[idx, 'job portal']}")
+                if "contact person" in df.columns or "contact" in df.columns:
+                    cp = df.loc[idx, "contact person"] if "contact person" in df.columns else ""
+                    ct = df.loc[idx, "contact"] if "contact" in df.columns else ""
+                    if cp or ct:
+                        print(f"    Recruiter: {cp} {ct}".strip())
+
             print("-"*80)
 
             # Collect payload for LLM (top N only)
