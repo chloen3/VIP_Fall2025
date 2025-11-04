@@ -31,6 +31,11 @@ try:
 except ImportError:
     OpenAI = None
 
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
 def _load_openai_client():
     """Loads .env and returns an OpenAI client or None. Prefers API_KEY, falls back to OPENAI_API_KEY."""
     load_dotenv()
@@ -48,6 +53,137 @@ def _load_openai_client():
         return None
 
 _client = _load_openai_client()
+
+EMB_MODEL = "text-embedding-3-small"  # cheap & strong; or -large for best quality
+
+def _embed_texts(client, texts, model=EMB_MODEL, batch=96):
+    if client is None or np is None:
+        return None
+    vecs = []
+    for i in range(0, len(texts), batch):
+        sl = texts[i:i+batch]
+        r = client.embeddings.create(model=model, input=sl)
+        vecs.extend([d.embedding for d in r.data])
+    return np.array(vecs, dtype="float32")
+
+def _cosine(a, b):
+    # a: (d,), b: (n,d)
+    a = a / (np.linalg.norm(a) + 1e-9)
+    b = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-9)
+    return b @ a
+
+def build_job_embeddings(df, title, role, desc, jskills):
+    """Create one text blob per job, then embed (cache to speed up)."""
+    if _client is None or np is None:
+        return None
+    blobs = []
+    idxs = []
+    for i in df.index:
+        t = str(title.loc[i] or "")
+        r = str(role.loc[i] or "")
+        d = str(desc.loc[i] or "")
+        s = str(jskills.loc[i] or "")
+        blobs.append((t + " | " + r + " | " + s + " | " + d)[:3000])  # clip
+        idxs.append(i)
+    embs = _embed_texts(_client, blobs)
+    return (np.array(idxs), embs)
+
+def embed_user_profile(skills, desired_roles=None):
+    if _client is None or np is None:
+        return None
+    text = "Skills: " + ", ".join(skills)
+    if desired_roles:
+        text += " | Desired roles: " + ", ".join(desired_roles)
+    v = _embed_texts(_client, [text])
+    return v[0] if v is not None else None
+
+def semantic_explain_alignment(
+    client,
+    user_skills: list[str],
+    job_text: str,
+    *,
+    emb_model="text-embedding-3-small",
+    llm_model="gpt-4o-mini",
+    topk_per_skill=2,
+    max_terms=120,
+    include_themes=True
+):
+    if client is None or np is None or not user_skills or not job_text:
+        return {"bridges": [], "themes": ""}
+
+    # --- Extract candidate terms from job text ---
+    stop = set("""
+        a an the and or for of to in on with by as from at into over under between across
+        is are was were be being been have has had do does did can could should would will may might
+        this that these those it its their our your his her them they you we i
+    """.split())
+
+    toks = [t.strip().lower() for t in re.split(r"[^\w#+./-]+", job_text) if t.strip()]
+    toks = [t for t in toks if len(t) >= 2 and t not in stop]
+    pref = [t for t in toks if any(c in t for c in "#+./-") or any(ch.isdigit() for ch in t) or len(t) > 5]
+
+    bigrams = [
+        f"{toks[i]} {toks[i+1]}"
+        for i in range(len(toks) - 1)
+        if toks[i] not in stop and toks[i+1] not in stop
+    ]
+
+    jd_terms = []
+    seen = set()
+    for t in pref + bigrams + toks:
+        if t not in seen:
+            seen.add(t)
+            jd_terms.append(t)
+        if len(jd_terms) >= max_terms:
+            break
+
+    if not jd_terms:
+        return {"bridges": [], "themes": ""}
+
+    # --- Compute embeddings for skills and JD terms ---
+    skills = [s.strip().lower() for s in user_skills if s and str(s).strip()]
+    skill_vecs = _embed_texts(client, skills, model=emb_model)
+    term_vecs = _embed_texts(client, jd_terms, model=emb_model)
+    if skill_vecs is None or term_vecs is None:
+        return {"bridges": [], "themes": ""}
+    term_norm = term_vecs / (np.linalg.norm(term_vecs, axis=1, keepdims=True) + 1e-9)
+
+    # --- Build bridges: per-skill top semantic matches ---
+    bridges = []
+    for s, sv in zip(skills, skill_vecs):
+        v = sv / (np.linalg.norm(sv) + 1e-9)
+        sims = term_norm @ v
+        order = np.argsort(-sims)
+        pairs = [(jd_terms[j], float(max(0.0, sims[j]))) for j in order[:topk_per_skill] if sims[j] > 0]
+        if pairs:
+            bridges.append({"skill": s, "matches": pairs})
+
+    # --- Optional: summarize themes with a short LLM call ---
+    themes = ""
+    if include_themes and bridges:
+        try:
+            small = [{"skill": b["skill"], "matches": [m[0] for m in b["matches"][:2]]}
+                     for b in bridges[:6]]
+            sys = (
+                "You explain conceptual alignments between a candidate's skills and a job posting. "
+                "Write 1–2 compact lines that highlight themes like "
+                "'Data viz → Tableau/Looker' or 'Project Mgmt → Scrum/Jira'."
+            )
+            user = {"bridges": small}
+            r = client.chat.completions.create(
+                model=llm_model,
+                temperature=0.2,
+                max_tokens=120,
+                messages=[
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+            )
+            themes = r.choices[0].message.content.strip()
+        except Exception as e:
+            print("[llm] summarize themes failed:", e)
+
+    return {"bridges": bridges, "themes": themes}
 
 # Helpers
 def to_float(x, default=None):
@@ -294,13 +430,8 @@ def main(jobs_csv: str, users_json: str):
     users = users[:1]
 
     # Load and normalize jobs
-    df = pd.read_csv(jobs_csv, dtype=str, keep_default_na=False, engine="c")
+    df = pd.read_csv(jobs_csv, dtype=str, keep_default_na=False, na_values=[])
     df = normalize_kaggle_columns(df)
-    if "country" in df.columns:
-        df = df[df["country"].str.lower().str.contains(r"\b(?:united states|usa|u\.s\.a?\.?)\b", regex=True, na=False)]
-        print(f"[INFO] Filtered to United States only → {len(df)} rows remaining.")
-
-    # Lowercase headers (again for safety)
     df.columns = [c.strip().lower() for c in df.columns]
 
     def col(name):
@@ -324,8 +455,8 @@ def main(jobs_csv: str, users_json: str):
     jskills_l = jskills.str.lower().fillna("")
 
     # Optional columns
-    min_exp  = col("min years exp").apply(to_int)
-    max_exp  = col("max years exp").apply(to_int)
+    min_exp  = col("min years exp").fillna("").apply(to_int)
+    max_exp  = col("max years exp").fillna("").apply(to_int)
     sal_min  = col("salary min").apply(to_float)
     sal_max  = col("salary max").apply(to_float)
     sal_cur  = col("salary currency").str.upper()
@@ -469,6 +600,14 @@ def main(jobs_csv: str, users_json: str):
         blob_series = (title_c + " " + role_c + " " + desc_c + " " + jskills_c)
         loc_series  = (loc_c + " " + country_c + " " + wtype_c + " " + desc_c)
 
+        # --- build embeddings once for candidate set ---
+        job_emb_cache = build_job_embeddings(df.loc[cand_idx], title_c, role_c, desc_c, jskills_c)
+        if job_emb_cache is not None:
+            cand_order, cand_embs = job_emb_cache  # cand_order aligns to cand_idx
+            user_vec = embed_user_profile(skills, desired_roles)
+        else:
+            cand_order, cand_embs, user_vec = None, None, None
+
         scores = []
         for idx in cand_idx:
             jb_blob = blob_series.loc[idx]
@@ -484,6 +623,21 @@ def main(jobs_csv: str, users_json: str):
             tag_hit  = 1 if ctags_mask.loc[idx] else 0
             geo_hit  = 1 if geo_mask.loc[idx] else 0
 
+            # --- Semantic similarity (embeddings) ---
+            sem_sim = 0.0
+            if (cand_embs is not None) and (user_vec is not None):
+                try:
+                    # find row position of idx in the candidate embedding matrix
+                    pos = int(np.where(cand_order == idx)[0][0])
+                    sem_sim = float(_cosine(user_vec, cand_embs[pos:pos+1]))
+                    # ignore negative similarity values (dissimilar)
+                    if sem_sim < 0.0:
+                        sem_sim = 0.0
+                except Exception:
+                    sem_sim = 0.0
+
+            # --- Final weighted score ---
+            SEM_WEIGHT = 1.2
             score = (
                 WEIGHTS["skill"] * skill_hits +
                 WEIGHTS["role"]  * role_hit +
@@ -493,7 +647,8 @@ def main(jobs_csv: str, users_json: str):
                 WEIGHTS["wtype"] * wtype_mask2.loc[idx] +
                 WEIGHTS["csize"] * csize_mask.loc[idx] +
                 WEIGHTS["tags"]  * ctags_mask.loc[idx] +
-                WEIGHTS["geo"]   * geo_mask.loc[idx]
+                WEIGHTS["geo"]   * geo_mask.loc[idx] +
+                SEM_WEIGHT       * sem_sim
             )
 
             if skill_hits < MIN_SKILL_HITS:
@@ -576,6 +731,31 @@ def main(jobs_csv: str, users_json: str):
                 if cp or ct:
                     print(f"    Recruiter: {cp} {ct}".strip())
 
+            alignment = semantic_explain_alignment(
+                _client,
+                skills,
+                " ".join([
+                    str(title.loc[idx] or ""),
+                    str(role.loc[idx] or ""),
+                    str(jskills.loc[idx] or ""),
+                    str(desc.loc[idx] or "")
+                ]),
+                emb_model=EMB_MODEL,
+                llm_model=OPENAI_MODEL,
+                include_themes=True
+            )
+            bridges = alignment["bridges"]
+            themes  = alignment["themes"]
+
+            if bridges:
+                print("    Concept bridges:")
+                for b in bridges[:3]:  # show top 3 skills
+                    pairs = ", ".join([f"{term} ({sim:.2f})" for term, sim in b["matches"][:2]])
+                    print(f"       - {b['skill']} → {pairs}")
+            if themes:
+                for line in themes.splitlines():
+                    print(f"       {line.strip()}")
+
             print(f"    Score: {score:.2f}  "
                   f"(skills:{s_hits} role:{bool(r_hit)} loc/remote:{bool(l_hit)} "
                   f"exp:{bool(e_hit)} sal:{bool(sa_hit)} wtype:{bool(wt2)} "
@@ -619,6 +799,6 @@ def main(jobs_csv: str, users_json: str):
             print()
 
 if __name__ == "__main__":
-    JOBS_CSV = "./job_descriptions.csv"
+    JOBS_CSV = "./job_descriptions_us.csv"
     USERS_JSON = "./user_profiles.json"
     main(JOBS_CSV, USERS_JSON)
