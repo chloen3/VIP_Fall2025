@@ -441,7 +441,7 @@ def main(jobs_csv: str, users_json: str):
         users = json.load(f)["users"]
 
     # Only the first user for quick test
-    users = users[2:]
+    users = users[:1]
 
     # Load and normalize jobs
     df = pd.read_csv(jobs_csv, dtype=str, keep_default_na=False, na_values=[])
@@ -839,5 +839,5 @@ def main(jobs_csv: str, users_json: str):
 
 if __name__ == "__main__":
     JOBS_CSV = "./job_descriptions_us.csv"
-    USERS_JSON = "./user_profiles.json"
+    USERS_JSON = "./Christine_Bennet_Resume_parsed.json"
     main(JOBS_CSV, USERS_JSON)

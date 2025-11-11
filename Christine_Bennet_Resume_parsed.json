@@ -1,0 +1,57 @@
+{
+  "users" : [
+    {
+  "user_id": "auto-generate-short-id",
+  "name": "CHRISTINE BENNET",
+  "headline": "Teacher",
+  "years_experience": 10,
+  "education": [
+    {
+      "degree": "Bachelor of Arts in Education",
+      "institution": "University of Washington",
+      "years": "1998 - 2002",
+      "location": "Seattle, WA"
+    }
+  ],
+  "desired_roles": [],
+  "skills": [
+    "Organization",
+    "Critical Thinking",
+    "Classroom Management",
+    "Adaptability",
+    "Blackboard",
+    "Leadership",
+    "Creativity",
+    "Problem-Solving"
+  ],
+  "location_keywords": [
+    "Seattle",
+    "WA"
+  ],
+  "states": [
+    "WA"
+  ],
+  "remote_ok": true,
+  "licensed_fields": [
+    "Teaching"
+  ],
+  "state_licenses": [
+    "Washington State Teaching Certificate"
+  ],
+  "desired_salary": {
+    "min": null,
+    "max": null,
+    "currency": "USD"
+  },
+  "work_type_pref": [],
+  "company_size_pref": [],
+  "company_tags_pref": [],
+  "geo_pref": {
+    "lat": null,
+    "lon": null,
+    "radius_km": null
+  },
+  "notes": ""
+}
+  ]
+}
