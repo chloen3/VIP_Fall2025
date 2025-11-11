@@ -1,0 +1,49 @@
+{
+  "users": [
+    {
+      "user_id": "milspouse-001",
+      "name": "Avery Carter",
+      "headline": "Registered Nurse | Compact-State RN | Telehealth-friendly",
+      "years_experience": 5,
+      "education": [
+        "B.S. Nursing"
+      ],
+      "desired_roles": [
+        "Registered Nurse",
+        "Telehealth Nurse",
+        "Care Coordinator"
+      ],
+      "skills": [
+        "Nursing",
+        "RN",
+        "Telehealth",
+        "Care Coordination",
+        "EMR",
+        "Epic",
+        "Patient Education"
+      ],
+      "location_keywords": [
+        "Fort Liberty",
+        "Fayetteville",
+        "North Carolina",
+        "NC",
+        "Remote",
+        "Telehealth"
+      ],
+      "states": ["nc"],
+      "remote_ok": true,
+      "licensed_fields": [
+        "Nursing"
+      ],
+      "state_licenses": [
+        "NLC Compact"
+      ],
+      "desired_salary": { "min": 80000, "max": 110000, "currency": "USD" },
+      "work_type_pref": ["full time", "remote", "hybrid", "temporary"],
+      "company_size_pref": ["201-1000", "1000+"],
+      "company_tags_pref": ["military-friendly", "license-portability", "telehealth", "portal-indeed", "portal-jobs2careers"],
+      "geo_pref": { "lat": 35.0527, "lon": -78.8784, "radius_km": 80 },
+      "notes": "PCS in 6\u20139 months; prefers employers familiar with license portability / NLC."
+    }
+  ]
+}
